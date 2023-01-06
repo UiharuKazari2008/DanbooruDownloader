@@ -11,6 +11,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace DanbooruDownloader.Commands
@@ -19,7 +20,8 @@ namespace DanbooruDownloader.Commands
     {
         static Logger Log = LogManager.GetCurrentClassLogger();
 
-        public static async Task Run(string path, long startId, long endId, bool ignoreHashCheck, bool includeDeleted, string username, string apikey)
+
+        public static async Task Run(string path, long startId, long endId, int parallelDownloads, bool ignoreHashCheck, bool includeDeleted, string username, string apikey)
         {
             string tempFolderPath = Path.Combine(path, "_temp");
             string imageFolderPath = Path.Combine(path, "images");
@@ -158,11 +160,12 @@ namespace DanbooruDownloader.Commands
                         Log.Info($"{shouldUpdateCount}/{posts.Length} posts are updated. {pendingCount} posts are pending. Downloading {shouldDownloadCount} posts ...");
                     }
 
-                    foreach (Post post in posts)
+                    var semaphore = new Semaphore(parallelDownloads, parallelDownloads);
+                    Parallel.ForEach(posts, async post =>
                     {
                         if (!post.IsValid)
                         {
-                            continue;
+                            return;
                         }
 
                         string metadataPath = GetPostLocalMetadataPath(imageFolderPath, post);
@@ -171,6 +174,7 @@ namespace DanbooruDownloader.Commands
 
                         PathUtility.CreateDirectoryIfNotExists(Path.GetDirectoryName(imagePath));
 
+                        semaphore.WaitOne();
                         try
                         {
                             await TaskUtility.RunWithRetry(async () =>
@@ -223,7 +227,11 @@ namespace DanbooruDownloader.Commands
                             Log.Error($"Can't retryable exception was occured : Id={post.Id}");
                             post.IsValid = false;
                         }
-                    }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    });
 
                     Log.Info("Updating database ...");
                     SQLiteUtility.InsertOrReplace(connection, posts.Where(p => p.IsValid).Select(p => p.JObject));
